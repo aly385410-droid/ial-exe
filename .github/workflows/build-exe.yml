@@ -1,0 +1,75 @@
+name: Build Windows Setup EXE
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  exe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare app files
+        run: |
+          Z=$(ls JudicialAgenda-Setup*.zip 2>/dev/null | grep -v Full | head -n1)
+          if [ -z "$Z" ]; then echo "::error::ارفع الملف JudicialAgenda-Setup-Clean.zip في الصفحة الرئيسية للمستودع أولاً"; exit 1; fi
+          mkdir work && unzip -q -o "$Z" -d work
+          S=$(dirname "$(find work -name Install.bat | head -n1)")
+          echo "SRC=$GITHUB_WORKSPACE/$S" >> $GITHUB_ENV
+      - name: Download Electron runtime
+        run: |
+          curl -L --fail --retry 5 -o electron.zip https://github.com/electron/electron/releases/download/v33.2.1/electron-v33.2.1-win32-x64.zip
+          echo "c325a6d905c67107e166267813ea2151ae7fd316c0a88de0081db0b9851a9946  electron.zip" | sha256sum -c -
+          mkdir stage && unzip -q electron.zip -d stage
+          mv stage/electron.exe stage/JudicialAgenda.exe
+          rm -f stage/resources/default_app.asar
+          mkdir -p stage/resources/app
+          cp -r "$SRC/app/." stage/resources/app/
+      - name: Add OCR engine
+        run: |
+          mkdir ocrtmp && cd ocrtmp && npm init -y >/dev/null && npm install tesseract.js@5.0.0 tesseract.js-core@5.0.0 --no-audit --no-fund
+          mkdir -p ../stage/resources/app/ocr
+          cp node_modules/tesseract.js/dist/tesseract.min.js node_modules/tesseract.js/dist/worker.min.js ../stage/resources/app/ocr/
+          cp node_modules/tesseract.js-core/tesseract-core*.wasm.js ../stage/resources/app/ocr/
+          ls -la ../stage/resources/app/ocr
+      - name: Build the installer
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq nsis
+          cat > setup.nsi <<'NSI'
+          Unicode true
+          Name "Judicial Assistant"
+          OutFile "JudicialAssistant-Setup.exe"
+          RequestExecutionLevel user
+          InstallDir "$LOCALAPPDATA\JudicialAgendaApp"
+          SetCompressor /SOLID lzma
+          Page instfiles
+          UninstPage instfiles
+          Section "Install"
+            SetOutPath "$INSTDIR"
+            File /r "stage/*.*"
+            WriteUninstaller "$INSTDIR\Uninstall.exe"
+            CreateShortcut "$DESKTOP\Judicial Assistant.lnk" "$INSTDIR\JudicialAgenda.exe" "" "$INSTDIR\resources\app\icon.ico"
+            CreateDirectory "$SMPROGRAMS\Judicial Assistant"
+            CreateShortcut "$SMPROGRAMS\Judicial Assistant\Judicial Assistant.lnk" "$INSTDIR\JudicialAgenda.exe" "" "$INSTDIR\resources\app\icon.ico"
+            WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\JudicialAgendaApp" "DisplayName" "Judicial Assistant"
+            WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\JudicialAgendaApp" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+            WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\JudicialAgendaApp" "DisplayIcon" "$INSTDIR\resources\app\icon.ico"
+            Exec '"$INSTDIR\JudicialAgenda.exe"'
+          SectionEnd
+          Section "Uninstall"
+            Delete "$DESKTOP\Judicial Assistant.lnk"
+            RMDir /r "$SMPROGRAMS\Judicial Assistant"
+            DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\JudicialAgendaApp"
+            RMDir /r "$INSTDIR"
+          SectionEnd
+          NSI
+          sed -i 's/^          //' setup.nsi
+          makensis setup.nsi
+          ls -la JudicialAssistant-Setup.exe
+      - name: Publish release with download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="exe-${{ github.run_number }}"
+          gh release create "$TAG" JudicialAssistant-Setup.exe --title "المساعد القضائي — ملف التثبيت $TAG" --notes "حمّل JudicialAssistant-Setup.exe وشغّله مباشرة — لا يحتاج إنترنت ولا فك ضغط"
+          echo "### رابط تحميل ملف التثبيت" >> $GITHUB_STEP_SUMMARY
+          echo "https://github.com/${{ github.repository }}/releases/download/$TAG/JudicialAssistant-Setup.exe" >> $GITHUB_STEP_SUMMARY
